@@ -1,0 +1,4 @@
+# config.py
+
+STATUS_ACTIVE = "ACTIVE"
+STATUS_BLOCKED = "BLOCKED"

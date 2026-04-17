@@ -85,9 +85,9 @@ class World:
     # ==========================================
     def reset(self):
         self.agent_positions = {
-            0: (1, 1),
-            1: (2, 2),
-            2: (3, 3)
+            0: (2, 2),
+            1: (4, 4),
+            2: (6, 6)
         }
 
         self.agent_roles = {
@@ -102,7 +102,7 @@ class World:
             2: config.STATUS_ACTIVE
         }
 
-        self.target_position = (12, 12)
+        self.target_position = (24, 24)
 
     # ==========================================
     # LOGIC: CHECK JOINT TASK COMPLETION

@@ -4,132 +4,113 @@ from world import World
 from coordination import Coordinator
 from pathfinding import astar
 from visualization import Visualizer
-import copy
+import config
+import math
 
-# ==========================================
-# DECISION LAYER
-# ==========================================
-def decide_next_move(aid, start, goal, world, intended_actions, mode="PREDICT"):
+class RLPolicy:
     """
-    Returns (next_step, path, wait_triggered) using A*.
-    In PREDICT mode: avoid stepping into cells already intended by others.
+    Hook for Deep Learning Neural Network Layer.
+    Currently maps states to A* directions, but structure supports 
+    tensor-based action selection for future training.
     """
-    path = astar(start, goal, world)
+    def get_action(self, aid, world, goal):
+        path = astar(world.agent_positions[aid], goal, world)
+        if len(path) > 1:
+            return path[1]
+        return world.agent_positions[aid]
+
+def decide_next_move(aid, world, goal, intended_actions, mode="PREDICT", policy=None, use_rl=False):
+    if use_rl and policy:
+        next_step = policy.get_action(aid, world, goal)
+        return next_step, [], False
+        
+    path = astar(world.agent_positions[aid], goal, world)
     wait_triggered = False
-
     if len(path) > 1:
         next_step = path[1]
         if mode == "PREDICT" and next_step in intended_actions.values():
-            wait_triggered = True
-            return start, path, wait_triggered
-        return next_step, path, wait_triggered
-    return start, path, wait_triggered
-
+            return world.agent_positions[aid], path, True
+        return next_step, path, False
+    return world.agent_positions[aid], path, False
 
 # ==========================================
 # MAIN SIMULATION
 # ==========================================
 
-# Initialize two identical worlds
-w_rule = World()
-w_pred = copy.deepcopy(w_rule)
+w = World()
+coord = Coordinator(w)
+vis = Visualizer(w)
+rl_agent = RLPolicy()
 
-coord_rule = Coordinator(w_rule)
-coord_pred = Coordinator(w_pred)
+metrics = {"steps": 0, "collisions": 0, "waits": 0, "task_completed": False}
+use_rl = False # Hackathon toggle
 
-# Single visualizer (uses w_rule for grid/obstacles context)
-vis = Visualizer(w_rule)
+initial_dist = 0
+for step in range(100):
+    if metrics["task_completed"]:
+        break
 
-metrics_rule = {"steps": 0, "collisions": 0, "waits": 0}
-metrics_pred = {"steps": 0, "collisions": 0, "waits": 0}
-
-# Run simulation
-for step in range(25):
-    print(f"\n--- STEP {step} ---")
-    metrics_rule["steps"] = step + 1
-    metrics_pred["steps"] = step + 1
-
-    # 1. Allocate tasks for both
-    coord_rule.allocate_tasks()
-    coord_pred.allocate_tasks()
-
-    # 2. Simulate failure at step 5
-    failed_aid = None
-    if step == 5:
-        failed_aid = 1
-        coord_rule.handle_agent_failure(failed_aid)
-        coord_pred.handle_agent_failure(failed_aid)
-
-    # 3. Decision Logic & Intended Actions
-    intended_rule = {}
-    paths_rule = {}
+    # 1. Recovery Logic
+    coord.update_failures()
+    metrics["steps"] += 1
     
-    intended_pred = {}
-    paths_pred = {}
+    # 2. Allocation
+    coord.allocate_tasks()
+    
+    # Calculate Completion %
+    target = w.target_position
+    primary_pos = None
+    for aid, role in w.agent_roles.items():
+        if role == "PRIMARY_CARRIER":
+            primary_pos = w.agent_positions[aid]
+            break
+            
+    if primary_pos:
+        curr_dist = abs(primary_pos[0] - target[0]) + abs(primary_pos[1] - target[1])
+        if step == 0: initial_dist = curr_dist
+        comp_pct = max(0, min(100, int((1 - curr_dist / initial_dist) * 100))) if initial_dist > 0 else 100
+    else:
+        comp_pct = 0
 
-    # Process RULE agents
-    for aid in w_rule.get_active_agents():
-        start = w_rule.agent_positions[aid]
-        role = w_rule.agent_roles[aid]
-        # Same role-based goal logic for both
-        if role == "PRIMARY_CARRIER": goal = w_rule.target_position
-        elif role == "SECONDARY_CARRIER": goal = (max(0, w_rule.target_position[0]-1), w_rule.target_position[1])
-        elif role == "SCOUT": goal = (w_rule.target_position[0], max(0, w_rule.target_position[1]-2))
-        else: goal = w_rule.target_position
+    # 3. Decision
+    intended = {}
+    paths = {}
+    active = w.get_active_agents()
+    
+    for aid in active:
+        role = w.agent_roles[aid]
+        if role == "PRIMARY_CARRIER": goal = target
+        elif role == "SECONDARY_CARRIER": 
+            # Sub-goal: position near target
+            goal = (target[0], max(0, target[1]-1))
+        else: goal = target
+        
+        next_step, path, wait = decide_next_move(aid, w, goal, intended, "PREDICT", rl_agent, use_rl)
+        intended[aid] = next_step
+        paths[aid] = path
+        if wait: metrics["waits"] += 1
+        
+    # 4. Conflict Resolution
+    safe = coord.resolve_collisions(intended)
+    for aid, pos in intended.items():
+        if pos != safe[aid] and pos != w.agent_positions[aid]:
+            metrics["collisions"] += 1
+            metrics["waits"] += 1
+            
+    # 5. Execute & Animate
+    old_pos = {aid: pos for aid, pos in w.agent_positions.items()}
+    w.update_positions(safe)
+    
+    # Check Completion
+    if w.check_joint_task_complete():
+        metrics["task_completed"] = True
+        comp_pct = 100
 
-        next_step, path, _ = decide_next_move(aid, start, goal, w_rule, intended_rule, mode="RULE")
-        intended_rule[aid] = next_step
-        paths_rule[aid] = path
-
-    # Process PREDICT agents
-    for aid in w_pred.get_active_agents():
-        start = w_pred.agent_positions[aid]
-        role = w_pred.agent_roles[aid]
-        if role == "PRIMARY_CARRIER": goal = w_pred.target_position
-        elif role == "SECONDARY_CARRIER": goal = (max(0, w_pred.target_position[0]-1), w_pred.target_position[1])
-        elif role == "SCOUT": goal = (w_pred.target_position[0], max(0, w_pred.target_position[1]-2))
-        else: goal = w_pred.target_position
-
-        next_step, path, wait_triggered = decide_next_move(aid, start, goal, w_pred, intended_pred, mode="PREDICT")
-        intended_pred[aid] = next_step
-        paths_pred[aid] = path
-        if wait_triggered: metrics_pred["waits"] += 1
-
-    # 4. Resolve Collisions (Track avoided collisions)
-    # We compare intended vs safe to count coordinator interventions
-    safe_rule = coord_rule.resolve_collisions(intended_rule)
-    for aid, pos in intended_rule.items():
-        if pos != safe_rule[aid] and pos != w_rule.agent_positions[aid]:
-            metrics_rule["collisions"] += 1
-            metrics_rule["waits"] += 1
-
-    safe_pred = coord_pred.resolve_collisions(intended_pred)
-    for aid, pos in intended_pred.items():
-        # Avoid double counting "waits" already counted in decision layer
-        if pos != safe_pred[aid] and pos != w_pred.agent_positions[aid]:
-            metrics_pred["collisions"] += 1
-            metrics_pred["waits"] += 1
-
-    # 5. Update positions
-    old_rule = {aid: pos for aid, pos in w_rule.agent_positions.items()}
-    w_rule.update_positions(safe_rule)
-
-    old_pred = {aid: pos for aid, pos in w_pred.agent_positions.items()}
-    w_pred.update_positions(safe_pred)
-
-    # 6. Calculate Improvement (%)
-    # improvement = ((rule_wait - predict_wait) / rule_wait) * 100
-    improvement = 0
-    if metrics_rule["waits"] > 0:
-        improvement = ((metrics_rule["waits"] - metrics_pred["waits"]) / metrics_rule["waits"]) * 100
-
-    # 7. Update Split-Screen Visualization
-    vis.animate_two_worlds(
-        w_rule, old_rule, w_rule.agent_positions, paths_rule, metrics_rule,
-        w_pred, old_pred, w_pred.agent_positions, paths_pred, metrics_pred,
-        improvement, failed_aid
+    # Visualization
+    vis.animate_high_fidelity(
+        w, old_pos, w.agent_positions, paths, metrics, comp_pct
     )
 
-print("\nSimulation finished. Close window to exit.")
+print("\nSimulation Finished.")
 while True:
-    vis.update()
+    vis.update()

@@ -2,3 +2,19 @@
 
 STATUS_ACTIVE = "ACTIVE"
 STATUS_BLOCKED = "BLOCKED"
+
+# UI Constants
+CELL_SIZE = 20
+SIDE_PANEL_WIDTH = 250
+FPS = 60
+
+# Professional Palette
+COLOR_BG = (20, 24, 35)        # Deep Navy
+COLOR_PANEL = (30, 35, 50)    # Slate
+COLOR_GRID = (45, 50, 65)     # Dim Gray
+COLOR_OBSTACLE = (100, 110, 130) # Metallic Blue
+COLOR_ACCENT = (0, 150, 255)  # Electric Blue
+COLOR_GOLD = (255, 215, 0)
+COLOR_WHITE = (230, 230, 240)
+COLOR_GREEN = (50, 205, 50)
+COLOR_RED = (255, 69, 0)

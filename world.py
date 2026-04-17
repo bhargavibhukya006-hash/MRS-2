@@ -8,16 +8,16 @@ class World:
         # ==========================================
         # BASIC SETTINGS
         # ==========================================
-        self.grid_size = 15
+        self.grid_size = 30
         self.num_agents = 3
 
         # ==========================================
         # AGENT STATE
         # ==========================================
         self.agent_positions = {
-            0: (1, 1),
-            1: (2, 2),
-            2: (3, 3)
+            0: (2, 2),
+            1: (4, 4),
+            2: (6, 6)
         }
 
         self.agent_roles = {
@@ -35,14 +35,16 @@ class World:
         # ==========================================
         # TARGET
         # ==========================================
-        self.target_position = (12, 12)
+        self.target_position = (24, 24)
 
         # ==========================================
         # OBSTACLES
         # ==========================================
         self.obstacles = set([
-            (5, 5), (5, 6), (5, 7),
-            (8, 8), (9, 8)
+            (10, 10), (10, 11), (10, 12), (10, 13), (10, 14),
+            (11, 10), (12, 10),
+            (20, 15), (20, 16), (20, 17),
+            (15, 20), (16, 20), (17, 20)
         ])
 
     # ==========================================
@@ -101,6 +103,42 @@ class World:
         }
 
         self.target_position = (12, 12)
+
+    # ==========================================
+    # LOGIC: CHECK JOINT TASK COMPLETION
+    # ==========================================
+    def check_joint_task_complete(self):
+        """
+        Returns True if:
+        - PRIMARY_CARRIER is exactly at target
+        - SECONDARY_CARRIER is within 1 cell of target (Manhattan dist <= 1)
+        """
+        primary_aid = None
+        secondary_aid = None
+        
+        for aid, role in self.agent_roles.items():
+            if role == "PRIMARY_CARRIER":
+                primary_aid = aid
+            elif role == "SECONDARY_CARRIER":
+                secondary_aid = aid
+                
+        if primary_aid is None or secondary_aid is None:
+            return False
+            
+        p_pos = self.agent_positions[primary_aid]
+        s_pos = self.agent_positions[secondary_aid]
+        target = self.target_position
+        
+        # PRIMARY must be at target
+        if p_pos != target:
+            return False
+            
+        # SECONDARY must be within 1 cell
+        dist = abs(s_pos[0] - target[0]) + abs(s_pos[1] - target[1])
+        if dist > 1:
+            return False
+            
+        return True
 
     # ==========================================
     # PRINT STATE (DEBUGGING)

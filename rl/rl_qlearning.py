@@ -48,6 +48,8 @@ def choose_action(state):
 
 # Q UPDATE:
 def update_q(state, action, reward, next_state):
+    if state not in Q:
+        Q[state] = {a: 0 for a in act}
     if next_state not in Q:
         Q[next_state] = {a: 0 for a in act}
     old = Q[state][action]

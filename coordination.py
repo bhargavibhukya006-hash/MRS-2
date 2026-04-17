@@ -1,173 +1,140 @@
 # coordination.py
-# Multi-agent logic (collision, task, failure)
 
 from typing import Dict, Tuple
 from world import World
 import config
 
 class Coordinator:
-    """
-    Module 2: Coordination Logic (Collision Avoidance, Task Allocation, Failure Handling)
-    Integrates directly with world.py (Central State) and config.py (Constants).
-    """
 
     def __init__(self, world: World):
-        # We hold a reference to the centralized world state
         self.world = world
-        self.failure_timer = {} # aid -> steps_since_failure
+        self.agent_task_map = {}
 
-    # ==========================================
-    # LOGIC 1: TASK ALLOCATION
-    # ==========================================
-    def allocate_tasks(self) -> Dict[int, str]:
-        """
-        Dynamically allocates tasks to bots based on their distance to the target.
-        Reads state entirely from self.world.
-        Returns the updated roles.
-        """
-        active_agents = self.world.get_active_agents()
-        
-        if not active_agents:
-            print("COORDINATOR: All agents are BLOCKED. Task failed.")
-            return self.world.agent_roles
+    # ----------------------------
+    # TASK ASSIGNMENT
+    # ----------------------------
+    def assign_initial_tasks(self):
+        for i in range(min(len(self.world.tasks), self.world.num_agents)):
+            self.agent_task_map[i] = [self.world.tasks[i]]
+            print(f"ASSIGN: Agent {i} → {self.world.tasks[i].name}")
 
-        # Calculate distances to target
-        target = self.world.target_position
-        distances = {}
-        for aid in active_agents:
-            pos = self.world.agent_positions.get(aid)
-            if pos:
-                dist = abs(pos[0] - target[0]) + abs(pos[1] - target[1])
-                distances[aid] = dist
+    def get_agent_current_task(self, aid):
+        if aid in self.agent_task_map:
+            for task in self.agent_task_map[aid]:
+                if not task.completed:
+                    return task
+        return None
 
-        # Sort active agents by proximity
-        sorted_agents = sorted(distances.keys(), key=lambda aid: distances[aid])
-        
-        # Clear old roles (default to SUPPORT)
-        for aid in active_agents:
-            self.world.agent_roles[aid] = "SUPPORT"
-            
-        # Assign roles based on proximity
-        if len(sorted_agents) >= 1:
-            self.world.agent_roles[sorted_agents[0]] = "PRIMARY_CARRIER"
-        if len(sorted_agents) >= 2:
-            self.world.agent_roles[sorted_agents[1]] = "SECONDARY_CARRIER"
-        if len(sorted_agents) >= 3:
-            self.world.agent_roles[sorted_agents[2]] = "SCOUT"
-            
-        print(f"COORDINATOR: Tasks allocated -> {self.world.agent_roles}")
-        return self.world.agent_roles
+    # ----------------------------
+    # COLLISION AVOIDANCE (FIXED)
+    # ----------------------------
+    def resolve_collisions(self, intended: Dict[int, Tuple[int, int]]):
 
-    # ==========================================
-    # LOGIC 2: COLLISION AVOIDANCE
-    # ==========================================
-    def resolve_collisions(self, intended_actions: Dict[int, Tuple[int, int]]) -> Dict[int, Tuple[int, int]]:
-        """
-        Filters intended movements to ensure no two agents occupy the same tile, 
-        and no two agents cross each other's path.
-        
-        INPUTS:
-            - Module 1/3 (RL/Agents): `intended_actions` mapping agent_id -> (x,y)
-        OUTPUTS:
-            - Returns `safe_actions` which Environment will safely apply to World.
-        """
-        safe_actions = {}
-        claimed_spots = set()
-        
-        # 1. Process static/blocked agents to reserve their spots
-        for aid in range(self.world.num_agents):
-            if self.world.agent_status[aid] == config.STATUS_BLOCKED or aid not in intended_actions:
-                safe_pos = self.world.agent_positions[aid]
-                safe_actions[aid] = safe_pos
-                claimed_spots.add(safe_pos)
+        safe = {}
+        claimed = set()
+        collision_count = 0
 
-        # 2. Priority for movement
-        priority_map = {"PRIMARY_CARRIER": 1, "SECONDARY_CARRIER": 2, "SCOUT": 3, "SUPPORT": 4, "UNASSIGNED": 5}
-        active_agents = [aid for aid in self.world.get_active_agents() if aid in intended_actions]
-        
-        # Sort so higher priority resolves movement first
-        active_agents.sort(key=lambda aid: priority_map.get(self.world.agent_roles[aid], 99))
+        # Blocked agents act like obstacles
+        blocked_positions = {
+            self.world.agent_positions[aid]
+            for aid in range(self.world.num_agents)
+            if self.world.agent_status[aid] == config.STATUS_BLOCKED
+        }
 
-        for aid in active_agents:
-            curr_pos = self.world.agent_positions[aid]
-            intended_pos = intended_actions[aid]
-            action_is_safe = True
+        for aid in sorted(intended.keys()):
 
-            # Check A: Target spot claimed?
-            if intended_pos in claimed_spots:
-                action_is_safe = False
-                
-            # Check B: Swapping places?
-            if action_is_safe:
-                for processed_aid, processed_safe_pos in safe_actions.items():
-                    if processed_aid != aid:
-                        processed_curr_pos = self.world.agent_positions[processed_aid]
-                        if processed_safe_pos == curr_pos and processed_curr_pos == intended_pos:
-                            action_is_safe = False
-                            break
+            curr = self.world.agent_positions[aid]
+            nxt = intended[aid]
 
-            # If unsafe, force Wait
-            if not action_is_safe:
-                safe_actions[aid] = curr_pos
+            moved = False  # ✅ FIX: always initialized
+
+            # Check if move is unsafe
+            if (
+                nxt in claimed or
+                nxt in blocked_positions or
+                nxt in self.world.obstacles or
+                not (0 <= nxt[0] < self.world.grid_size and 0 <= nxt[1] < self.world.grid_size)
+            ):
+
+                # Try alternative moves (DEADLOCK BREAK)
+                alternatives = [
+                    (curr[0]+1, curr[1]),
+                    (curr[0]-1, curr[1]),
+                    (curr[0], curr[1]+1),
+                    (curr[0], curr[1]-1),
+                ]
+
+                for alt in alternatives:
+                    if (
+                        0 <= alt[0] < self.world.grid_size and
+                        0 <= alt[1] < self.world.grid_size and
+                        alt not in self.world.obstacles and
+                        alt not in claimed and
+                        alt not in blocked_positions
+                    ):
+                        safe[aid] = alt
+                        claimed.add(alt)
+                        moved = True
+                        break
+
+                # If no alternative found → WAIT
+                if not moved:
+                    safe[aid] = curr
+                    claimed.add(curr)
+                    collision_count += 1
+
             else:
-                safe_actions[aid] = intended_pos
-                
-            claimed_spots.add(safe_actions[aid])
-            
-        return safe_actions
+                # Safe move
+                safe[aid] = nxt
+                claimed.add(nxt)
 
-    # ==========================================
-    # LOGIC 3: FAILURE HANDLING
-    # ==========================================
-    def handle_agent_failure(self, failed_agent_id: int):
-        """
-        Called when an agent malfunctions. Disables and reallocates task.
-        """
-        if self.world.agent_status[failed_agent_id] == config.STATUS_BLOCKED:
-            return # Already blocked
-            
-        print(f"COORDINATOR [ALERT]: Agent {failed_agent_id} has suffered a critical failure.")
-        
-        self.world.agent_status[failed_agent_id] = config.STATUS_BLOCKED
-        self.world.agent_roles[failed_agent_id] = "DEAD"
-        self.failure_timer[failed_agent_id] = 0 # Initialize timer
-        
-        print("COORDINATOR: Initiating emergency task reallocation...")
-        self.allocate_tasks()
+        print(f"SAFE: {safe}")
+        return safe, collision_count
 
-    def update_failures(self):
-        """
-        Increments failure timers and recovers agents after 5 steps.
-        """
-        recovered_aids = []
-        for aid in list(self.failure_timer.keys()):
-            self.failure_timer[aid] += 1
-            if self.failure_timer[aid] >= 5:
-                recovered_aids.append(aid)
-        
-        for aid in recovered_aids:
-            print(f"COORDINATOR: Agent {aid} recovered and rejoined as SUPPORT.")
-            self.world.agent_status[aid] = config.STATUS_ACTIVE
-            self.world.agent_roles[aid] = "SUPPORT"
-            del self.failure_timer[aid]
-            self.allocate_tasks() # Re-evaluate roles after recovery
+    # ----------------------------
+    # FAILURE HANDLING (SMART)
+    # ----------------------------
+    def handle_agent_failure(self, failed_id):
 
+        if self.world.agent_status[failed_id] == config.STATUS_BLOCKED:
+            return
 
-if __name__ == "__main__":
-    # Quick Test Execution
-    w = World()
-    # Mock data
-    w.agent_positions = {0: (2, 2), 1: (3, 3), 2: (8, 8)}
-    w.target_position = (10, 10)
-    
-    coord = Coordinator(w)
-    print("\n--- TEST 1: TASK ALLOCATION ---")
-    coord.allocate_tasks()
-    
-    print("\n--- TEST 2: COLLISION AVOIDANCE ---")
-    intended_moves = {0: (3, 3), 1: (3, 3), 2: (9, 8)} # Agent 0 and 1 try to go to (3,3)
-    safe = coord.resolve_collisions(intended_moves)
-    print(f"Intended: {intended_moves}\nSafe Results: {safe}")
-    
-    print("\n--- TEST 3: FAILURE HANDLING ---")
-    coord.handle_agent_failure(failed_agent_id=2)
+        print(f"FAILURE: Agent {failed_id} blocked")
+
+        self.world.agent_status[failed_id] = config.STATUS_BLOCKED
+
+        task = self.get_agent_current_task(failed_id)
+        if not task:
+            return
+
+        task.failed = True
+
+        active_agents = self.world.get_active_agents()
+        if not active_agents:
+            return
+
+        def manhattan(a, b):
+            return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+        target = task.current_location if task.picked else task.start
+
+        # Choose closest agent
+        new_agent = min(
+            active_agents,
+            key=lambda aid: manhattan(self.world.agent_positions[aid], target)
+        )
+
+        if new_agent not in self.agent_task_map:
+            self.agent_task_map[new_agent] = []
+
+        # Put task at front (priority)
+        self.agent_task_map[new_agent].insert(0, task)
+
+        task.failed = False
+
+        print(f"RECOVERY: Task {task.name} → Agent {new_agent}")
+
+        if task.picked:
+            print(f"Agent {new_agent} will go to {task.current_location} then {task.end}")
+        else:
+            print(f"Agent {new_agent} will go to {task.start}")

@@ -4,199 +4,124 @@ from world import World
 from coordination import Coordinator
 from pathfinding import astar
 from visualization import Visualizer
-import config
-import math
 import random
-import pickle
-import torch
 
-# PART 1: Import RL Modules
-import rl.rl_qlearning as q_agent
-import rl.rl_dqn as dqn_agent
+EPI_COUNT = 3
+MAX_STEPS = 200
 
-# PART 2: Mode Switching
-MODE = "RULE"   # Options: "RULE", "Q", "DQN"
+vis = None
 
-# PART 3: Action Mapping
-ACTION_MAP = {
-    "UP": (-1, 0),
-    "DOWN": (1, 0),
-    "LEFT": (0, -1),
-    "RIGHT": (0, 1),
-    "WAIT": (0, 0),
-    "REROUTE": (0, 0),
-    "TAKE_OVER": (0, 0)
-}
-ACT_LIST = ["UP", "DOWN", "LEFT", "RIGHT", "WAIT", "REROUTE", "TAKE_OVER"]
+def get_dynamic_obstacles(w, current_aid):
+    obs = set(w.obstacles)
+    for aid, pos in w.agent_positions.items():
+        if aid != current_aid:
+            obs.add(pos)
+    return obs
 
-# Evaluation Parameters
-EPI_COUNT = 5
-MAX_STEPS = 100
-
-# PART 1 (Continued): Load Models
-if MODE == "Q":
-    try:
-        with open("q_table.pkl", "rb") as f:
-            q_agent.Q = pickle.load(f)
-        q_agent.epsilon = 0 # No exploration during inference
-        print("SYSTEM: Pre-trained Q-table loaded successfully.")
-    except FileNotFoundError:
-        print("WARNING: q_table.pkl not found. Agent will act randomly.")
-
-elif MODE == "DQN":
-    try:
-        dqn_agent.model.load_state_dict(torch.load("dqn_model.pth"))
-        dqn_agent.model.eval()
-        dqn_agent.epsilon = 0 # No exploration during inference
-        print("SYSTEM: Pre-trained DQN weights loaded successfully.")
-    except FileNotFoundError:
-        print("WARNING: dqn_model.pth not found. Agent will act randomly.")
-
-class RLPolicy:
-    def get_action(self, aid, world, goal):
-        path = astar(world.agent_positions[aid], goal, world)
-        if len(path) > 1:
-            return path[1]
-        return world.agent_positions[aid]
-
-def decide_next_move(aid, world, goal, intended_actions, mode="PREDICT", policy=None, use_rl=False):
-    # Rule-based fallback or pure rule mode
-    path = astar(world.agent_positions[aid], goal, world)
-    wait_triggered = False
-    
-    if mode == "RULE":
-        if len(path) > 1:
-            next_step = path[1]
-            if next_step in intended_actions.values():
-                return world.agent_positions[aid], path, True
-            return next_step, path, False
-        return world.agent_positions[aid], path, False
-
-    # RL Logic
-    # (To be called inside the episode loop for better state/reward tracking)
-    return world.agent_positions[aid], path, False
-
-# ==========================================
-# MAIN SIMULATION
-# ==========================================
-
-all_metrics = []
-
-# Helper to fetch state for agents
-def get_current_state(aid, world, target, cnflt=0):
-    pos = world.agent_positions[aid]
-    nearby = [p for i, p in world.agent_positions.items() if i != aid and abs(p[0]-pos[0])+abs(p[1]-pos[1]) <= 3]
-    failed = [p for i, p in world.agent_positions.items() if world.agent_status[i] == config.STATUS_BLOCKED]
-    return q_agent.get_state(pos, target, nearby, cnflt, failed)
-
-# Initializer for Visualization (needed for static context)
-vis = Visualizer(World())
-
-# Main Episode Loop
 for episode in range(EPI_COUNT):
     w = World()
+
+    if vis is None:
+        vis = Visualizer(w)
+    else:
+        vis.world = w
+
     coord = Coordinator(w)
-    
-    metrics = {"steps": 0, "collisions": 0, "waits": 0, "task_completed": False}
-    initial_dist = 0
-    
-    print(f"\n===== EPISODE {episode+1}/{EPI_COUNT} | MODE: {MODE} =====")
+    coord.assign_initial_tasks()
+
+    metrics = {
+        "steps": 0,
+        "waits": 0,
+        "collisions": 0,   # ✅ REQUIRED
+        "task_completed": False
+    }
+    print(f"\n===== EPISODE {episode+1} =====")
 
     for step in range(MAX_STEPS):
-        if metrics["task_completed"]:
+
+        # OPTIONAL: comment this if you don't want failure
+        if step == 10:
+            coord.handle_agent_failure(1)
+
+        if all(t.completed for t in w.tasks):
+            print("MISSION COMPLETE")
+            metrics["task_completed"] = True
             break
 
-        # 1. Failure Recovery
-        coord.update_failures()
         metrics["steps"] += 1
-        
-        # 2. Planning
-        coord.allocate_tasks()
-        target = w.target_position
-        
-        # Capture initial dist for metrics %
-        if step == 0:
-            p_pos = next((w.agent_positions[i] for i, r in w.agent_roles.items() if r == "PRIMARY_CARRIER"), None)
-            if p_pos: initial_dist = abs(p_pos[0]-target[0]) + abs(p_pos[1]-target[1])
-        
-        # 3. Decision & State Capture
-        # 3. Decision & State Capture
+
+        old_positions = dict(w.agent_positions)
+
         intended = {}
         paths = {}
-        states = {}
-        actions = {}
-        
-        active = w.get_active_agents()
-        for aid in active:
-            # a. Capture State
-            states[aid] = get_current_state(aid, w, target)
+
+        for aid in w.get_active_agents():
+
             curr = w.agent_positions[aid]
-            
-            # b. Choose Action
-            if MODE == "RULE":
-                next_pos, path, wait = decide_next_move(aid, w, target, intended, "RULE")
-                intended[aid] = next_pos
-                paths[aid] = path
-                actions[aid] = "WAIT" if wait or next_pos == curr else "MOVE"
+            task = coord.get_agent_current_task(aid)
+
+            if not task:
+                intended[aid] = curr
+                continue
+
+            # --- GOAL LOGIC ---
+            if not task.picked:
+                goal = task.start
             else:
-                # RL Inference (Pre-trained)
-                if MODE == "Q":
-                    action_str = q_agent.choose_action(states[aid])
-                else: # DQN
-                    idx = dqn_agent.choose_action(states[aid])
-                    action_str = dqn_agent.act[idx]
-                
-                actions[aid] = action_str
-                
-                # Hybrid Logic: 75% A* / 25% Direct RL
-                if action_str in ["WAIT", "REROUTE", "TAKE_OVER"]:
-                    next_pos = curr
-                else:
-                    roll = random.random()
-                    if roll < 0.25: # Direct RL Move
-                        delta = ACTION_MAP.get(action_str, (0, 0))
-                        next_pos = (curr[0] + delta[0], curr[1] + delta[1])
-                    else: # A* Pathfinding Step (Hybrid)
-                        path = astar(curr, target, w)
-                        next_pos = path[1] if len(path) > 1 else curr
-                        paths[aid] = path
-                
-                # Boundary/Obstacle fallback
-                if not w.is_valid_position(next_pos):
-                    next_pos = curr
-                    
-                intended[aid] = next_pos
+                goal = task.current_location if task.failed else task.end
 
-        # 4. Conflict Resolution (Coordinator)
-        safe = coord.resolve_collisions(intended)
-        
-        # 5. Execute & Learn
-        old_positions = {aid: pos for aid, pos in w.agent_positions.items()}
+            # --- DYNAMIC OBSTACLES (KEY FIX) ---
+            dyn_obs = get_dynamic_obstacles(w, aid)
+
+            path = astar(curr, goal, w.grid_size, dyn_obs)
+
+            if len(path) > 1:
+                next_pos = path[1]
+            else:
+                next_pos = curr
+
+            intended[aid] = next_pos
+            paths[aid] = path
+
+            print(f"Agent {aid}: {curr} → {next_pos} | Goal: {goal}")
+
+        # --- COLLISION RESOLUTION ---
+        safe,collisions = coord.resolve_collisions(intended)
+        metrics["collisions"] += collisions
+        # --- TASK EXECUTION ---
+        for aid, pos in safe.items():
+            task = coord.get_agent_current_task(aid)
+            if not task:
+                continue
+
+            if pos == task.start and not task.picked:
+                task.picked = True
+                task.current_location = pos
+                print(f"PICKED: Agent {aid} picked {task.name}")
+
+            if pos == task.end and task.picked:
+                task.completed = True
+                print(f"DELIVERED: Agent {aid} completed {task.name}")
+
+            if task.picked and not task.completed:
+                task.current_location = pos
+
         w.update_positions(safe)
-        
-        # Check Task
-        if w.check_joint_task_complete():
-            metrics["task_completed"] = True
 
-        # 6. Visualization
-        comp_pct = 0
-        p_pos = next((w.agent_positions[i] for i, r in w.agent_roles.items() if r == "PRIMARY_CARRIER"), None)
-        if p_pos and initial_dist > 0:
-            curr_d = abs(p_pos[0]-target[0]) + abs(p_pos[1]-target[1])
-            comp_pct = max(0, min(100, int((1 - curr_d/initial_dist)*100)))
-        
-        vis.animate_high_fidelity(w, old_positions, w.agent_positions, paths, metrics, comp_pct)
+        # --- VISUAL ---
+        done = sum(1 for t in w.tasks if t.completed)
+        pct = int((done / len(w.tasks)) * 100)
 
-    all_metrics.append(metrics)
+        vis.animate_high_fidelity(
+            w,
+            old_positions,
+            w.agent_positions,
+            paths,
+            metrics,
+            pct
+        )
 
-# Final comparison
-print(f"\n===== SIMULATION COMPLETE | MODE: {MODE} =====")
-success_count = sum(1 for m in all_metrics if m["task_completed"])
-success_rate = (success_count / len(all_metrics)) * 100 if all_metrics else 0
-avg_steps = sum(m["steps"] for m in all_metrics) / len(all_metrics) if all_metrics else 0
-
-print(f"Final Success Rate: {success_rate:.1f}%")
-print(f"Avg Steps per Episode: {avg_steps:.1f}")
+print("\n===== DONE =====")
 
 while True:
     vis.update()

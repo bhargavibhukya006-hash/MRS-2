@@ -30,8 +30,8 @@ class RLLocalPlannerNode(Node):
 
     def load_q_table(self):
         try:
-            # Assuming Q-table was dumped in the root MRS-2 dir
-            path = os.path.expanduser('~/MRS-2/q_table.pkl')
+            # Default to current directory instead of hardcoded MRS-2 path
+            path = 'q_table.pkl'
             if os.path.exists(path):
                 with open(path, 'rb') as f:
                     self.q_table = pickle.load(f)

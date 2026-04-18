@@ -12,13 +12,13 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*launch.[pxy][yma]*')))
+        (os.path.join('share', package_name, 'launch'), glob(os.path.join('launch', '*launch.[pxy][yma]*'))),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'torch'],
     zip_safe=True,
-    maintainer='user',
-    maintainer_email='user@todo.todo',
-    description='ROS 2 package for swarm simulation, transitioning from Pygame.',
+    maintainer='Somid',
+    maintainer_email='somid@todo.todo',
+    description='Swarm simulation migrated to ROS 2 continuous space',
     license='TODO: License declaration',
     tests_require=['pytest'],
     entry_points={
@@ -28,7 +28,7 @@ setup(
             'robot_controller_node = swarm_sim.robot_controller_node:main',
             'rl_local_planner_node = swarm_sim.rl_local_planner_node:main',
             'dqn_local_planner_node = swarm_sim.dqn_local_planner_node:main',
-            'environment_visualizer_node = swarm_sim.environment_visualizer_node:main'
+            'environment_visualizer_node = swarm_sim.environment_visualizer_node:main',
         ],
     },
 )
